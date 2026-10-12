@@ -1,0 +1,246 @@
+# Finbuddy CRM — Enterprise Backend
+
+> **Finbuddy CRM** (formerly Finzoop) is an enterprise-grade, multi-tenant digital lending and financial CRM engineered as a **Modular Monolith** using **Java 21 LTS**, **Spring Boot 3.3.x**, and **Spring Modulith**.
+
+---
+
+## 🏛️ Architecture Overview
+
+Finbuddy CRM adopts a clean **Modular Monolith** architectural pattern powered by **Spring Modulith**. It achieves strict domain boundary encapsulation, zero cyclic coupling, and outbox transactional event delivery within a single deployable artifact.
+
+```
+                              ┌────────────────────────────────────────┐
+                              │           OIDC / OAuth 2.0             │
+                              │         (Keycloak / Okta)              │
+                              └──────────────────┬─────────────────────┘
+                                                 │ JWT Bearer Tokens
+                                                 ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   API GATEWAY / FILTER                                 │
+│          TenantFilter (Extracts X-Tenant-ID & JWT Claims -> TenantContext / MDC)       │
+└────────────────────────────────────────┬───────────────────────────────────────────────┘
+                                         │
+ ┌───────────────────────────────────────┴──────────────────────────────────────────────┐
+ │                              FINBUDDY MODULAR MONOLITH                               │
+ │                                                                                      │
+ │  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌──────────────┐  │
+ │  │      Leads      │   │     Imports     │   │  Integrations   │   │ Conversations│  │
+ │  │   (Pipeline &   │   │  (Async Stream  │   │ (Signed Webhooks│   │ (WhatsApp &  │  │
+ │  │  Deduplication) │   │  & Resumable)   │   │ & Idempotency)  │   │  Telephony)  │  │
+ │  └────────┬────────┘   └────────┬────────┘   └────────┬────────┘   └──────────────┘  │
+ │           │                     │                     │                              │
+ │           └──────────────┬──────┴─────────────────────┘                              │
+ │                          ▼ (Spring Modulith Domain Event Bus)                        │
+ │  ┌────────────────────────────────────────────────────────────────────────────────┐  │
+ │  │                   Audit Module (Tamper-Evident Hash Chaining)                  │  │
+ │  └────────────────────────────────────────────────────────────────────────────────┘  │
+ │                                                                                      │
+ │  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌──────────────┐  │
+ │  │  Applications   │   │    Partners     │   │    Campaigns    │   │   Finance    │  │
+ │  │   (LOS Engine)  │   │  (NBFC & Banks) │   │   (Attribution) │   │ (Commissions)│  │
+ │  └─────────────────┘   └─────────────────┘   └─────────────────┘   └──────────────┘  │
+ │                                                                                      │
+ └───────────────────────────────────────┬──────────────────────────────────────────────┘
+                                         │
+           ┌─────────────────────────────┼─────────────────────────────┐
+           ▼                             ▼                             ▼
+┌──────────────────────┐      ┌──────────────────────┐      ┌──────────────────────┐
+│    PostgreSQL 16     │      │       Redis 7        │      │    S3 Object Store   │
+│ (Tenant-Isolated DDL │      │ (Distributed Locks & │      │ (MinIO / AWS S3 for  │
+│   & Audit Chain)     │      │ Idempotency Cache)   │      │ Bulk Ingestion Files)│
+└──────────────────────┘      └──────────────────────┘      └──────────────────────┘
+```
+
+---
+
+## 🛠️ Technology Stack
+
+| Layer | Technology | Version | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Language** | Java | `21 LTS` | Modern Java features (Virtual Threads, Records, Pattern Matching) |
+| **Framework** | Spring Boot | `3.3.4` | Core application framework |
+| **Modularity** | Spring Modulith | `1.2.3` | Architectural boundary enforcement & event publication |
+| **Security** | Spring Security OAuth2 | `6.3.x` | Stateless Resource Server, JWT verification, Step-Up MFA |
+| **Primary Database**| PostgreSQL | `16+` | ACID transactional store, JSONB, row indexing |
+| **Database Migration**| Flyway | `10.x` | Version-controlled DDL migrations (`V1__init_schema.sql`) |
+| **Cache & Queues** | Redis | `7+` | Distributed idempotency locks, rate limiting, token blacklist |
+| **Object Storage** | AWS SDK for Java v2 | `2.27.x` | S3 / MinIO storage for bulk CSV/XLSX uploads & exports |
+| **CSV Processing** | Apache Commons CSV | `1.11.0`| High-throughput chunked stream parsing |
+| **Cryptography** | BouncyCastle / JCA | `1.78.1`| HMAC-SHA256 hash chaining & signature verification |
+| **API Contract** | Springdoc OpenAPI | `2.6.0` | Swagger UI & OpenAPI 3.0 specification |
+| **Containerization**| Docker & Docker Compose | Multi-stage | Hardened Eclipse Temurin JRE runtime |
+
+---
+
+## 🔐 Core Security & Compliance Architecture
+
+### 1. Multi-Tenancy & Data Isolation
+- **Context Resolution**: Every request is intercepted by [`TenantFilter`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/tenant/TenantFilter.java), which extracts `tenant_id` from verified JWT claims (or `X-Tenant-ID` header) and initializes [`TenantContext`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/tenant/TenantContext.java) and SLF4J MDC.
+- **Repository-Level Boundaries**: All repository queries (`LeadRepository`, `ImportJobRepository`) enforce tenant predicates (`tenant_id = :tenantId`), preventing horizontal privilege escalation and cross-tenant leakage.
+- **Base Entity**: All entities inherit from [`BaseTenantEntity`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/tenant/BaseTenantEntity.java), guaranteeing `tenant_id`, `created_at`, and `updated_at` persistence automatically.
+
+### 2. 11 Enterprise RBAC Roles
+Finbuddy CRM strictly enforces the **Principle of Least Privilege** using 11 distinct roles defined in [`UserRole.java`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/security/UserRole.java):
+
+| Role Code | Role Name | Primary Responsibilities |
+| :--- | :--- | :--- |
+| `ROLE_SUPER_ADMIN` | Super Admin | Platform-wide root administrator with cross-tenant management |
+| `ROLE_COMPANY_ADMIN` | Company Admin | Full control over the tenant domain, users, and organization settings |
+| `ROLE_MARKETING_MANAGER` | Marketing Manager | Campaign budgeting, UTM configuration, and acquisition channel oversight |
+| `ROLE_PERFORMANCE_MARKETER`| Performance Marketer | Ad-set tuning, click tracking, pixel integration, and attribution analytics |
+| `ROLE_DATA_VENDOR_MANAGER` | Data/Vendor Manager | Bulk lead ingestion, vendor CSV uploads, and import error remediation |
+| `ROLE_SALES_MANAGER` | Sales Manager | Lead pipeline distribution, sales queues, and team conversion metrics |
+| `ROLE_SALES_AGENT` | Sales Agent | Lead interaction, call logging, note updates, and stage transitions |
+| `ROLE_AFFILIATE` | Affiliate Partner | Referral link generation and payout/lead conversion tracking |
+| `ROLE_LENDING_PARTNER` | Lending Partner (NBFC) | Reviewing loan dispatches, underwriting offers, and callback management |
+| `ROLE_FINANCE` | Finance Executive | Commission ledgers, GST invoices, partner payouts, and banking details |
+| `ROLE_COMPLIANCE` | Compliance & Risk Officer | Unmasked PII access, regulatory reporting, and audit log verification |
+
+### 3. Dynamic Field-Level PII Masking
+Indian regulatory guidelines mandate masking sensitive PII (PAN, Phone, Bank Details, Aadhaar).
+- **Implementation**: Handled transparently during Jackson JSON serialization via [`@MaskPII`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/security/pii/MaskPII.java) and [`PiiMaskingSerializer`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/security/pii/PiiMaskingSerializer.java).
+- **Behavior**:
+  - `ROLE_COMPLIANCE` and `ROLE_SUPER_ADMIN` receive **raw, unmasked** values.
+  - All standard roles receive **masked** representations:
+    - **PAN**: `ABCDE****F`
+    - **Phone**: `XXXXXX3210`
+    - **Bank Account**: `XXXXXXXX9012`
+    - **Email**: `j***e@domain.com`
+
+### 4. Step-Up MFA (Privileged Actions)
+Destructive or sensitive actions (lead deletion, payout approval, bulk exports) are guarded by [`@MfaRequired`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/security/MfaRequired.java).
+- The AOP aspect [`MfaAspect`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/shared/security/MfaAspect.java) inspects the JWT token for `mfa_verified: true` or `amr: ["mfa", "totp"]`.
+- If unverified, the request immediately terminates with HTTP 403 Forbidden and the header `X-Mfa-Required: true`.
+
+---
+
+## ⚡ Core Domain Engines
+
+### 1. Tamper-Evident Append-Only Audit Logging
+Implemented in [`AuditLogService.java`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/audit/service/AuditLogService.java).
+- **Cryptographic Chaining**: Every audit entry computes an HMAC-SHA256 hash using the previous entry's hash in the tenant chain:
+  $$\text{entry\_hash} = \text{HMAC-SHA256}(\text{prev\_hash} \parallel \text{tenant\_id} \parallel \text{user\_id} \parallel \text{action} \parallel \text{entity} \parallel \text{diff} \parallel \text{timestamp}, \text{secret})$$
+- **Integrity Replay**: An integrated verification API (`verifyChainIntegrity(tenantId)`) replays the cryptographic chain from the Genesis block to mathematically detect any tampering, modification, or deletion.
+
+### 2. Asynchronous Resumable Bulk Ingestion
+Implemented in [`ImportService.java`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/imports/service/ImportService.java).
+- **Streaming Pipeline**: Multipart uploads stream directly to private S3/MinIO storage.
+- **Resumable Checkpoints**: Processes records in chunks of 100 with transactional checkpoints. If an import fails midway, it can be resumed via `/api/v1/imports/{id}/resume` from the exact `current_row_index` without duplicate ingestion.
+- **Line-by-Line Error Diagnostics**: Individual invalid rows (bad phone formatting, duplicate PAN, invalid income) are recorded in `import_row_errors` while valid rows proceed successfully.
+
+### 3. Signed Lender Webhooks & Distributed Idempotency
+Implemented in [`WebhookSignatureVerifier.java`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/integrations/service/WebhookSignatureVerifier.java) and [`IdempotencyService.java`](file:///c:/finbuddy1/backend/src/main/java/com/finbuddy/crm/integrations/service/IdempotencyService.java).
+- **Replay Protection**: Rejects webhook callbacks with timestamps older than 300 seconds.
+- **HMAC Verification**: Performs timing-attack-safe comparison (`MessageDigest.isEqual`) on partner signatures.
+- **Duplicate Callback Protection**: Webhook calls require an `Idempotency-Key`. Redis distributed locks (`SET NX EX`) prevent race conditions, and completed responses are cached for 7 days so retries return instant `200 OK` receipts without duplicate side-effects.
+
+---
+
+## 📁 Repository Structure
+
+```
+c:/finbuddy1/
+├── docker-compose.yml                                    # Root compose stack
+├── README.md                                             # Enterprise documentation
+└── backend/                                              # Backend Subsystem
+    ├── pom.xml                                           # Maven dependencies & build plugins
+    ├── Dockerfile                                        # Container build file (Temurin 21)
+    ├── docker-compose.yml                                # Backend-isolated compose file
+    └── src/
+        ├── main/
+        │   ├── resources/
+        │   │   ├── application.yml                       # System configuration
+        │   │   └── db/migration/
+        │   │       └── V1__init_schema.sql               # PostgreSQL DDL Flyway script
+        │   └── java/com/finbuddy/crm/
+        │       ├── FinbuddyApplication.java              # Main Application Class
+        │       ├── shared/                               # Cross-Cutting Shared Modules
+        │       │   ├── tenant/                           # TenantContext, TenantFilter, BaseTenantEntity
+        │       │   ├── security/                         # SecurityConfig, UserRole, MFA Aspect
+        │       │   │   └── pii/                          # MaskPII, PiiMaskingSerializer, MaskUtils
+        │       │   ├── audit/                            # AuditEvent, AuditAction
+        │       │   ├── storage/                          # S3StorageService, StorageService
+        │       │   └── error/                            # GlobalExceptionHandler, Problem Details
+        │       ├── audit/                                # AuditLog entity, repository, service, listener
+        │       ├── leads/                                # Leads domain (Lead, Controller, Service, DTOs)
+        │       ├── imports/                              # Bulk ingestion (ImportJob, ImportService, Controller)
+        │       ├── integrations/                         # Signed webhooks, IdempotencyService
+        │       ├── auth/                                 # OIDC & token boundary
+        │       ├── users/                                # User management boundary
+        │       ├── organizations/                        # Organization boundary
+        │       ├── campaigns/                            # Marketing campaign boundary
+        │       ├── tracking/                             # Clicks & attribution boundary
+        │       ├── conversations/                        # Omnichannel chat/call boundary
+        │       ├── partners/                             # NBFC partner boundary
+        │       ├── applications/                         # Loan origination boundary
+        │       ├── finance/                              # Commission ledger boundary
+        │       └── reports/                              # Reporting boundary
+        └── test/
+            ├── resources/application-test.yml
+            └── java/com/finbuddy/crm/
+                ├── FinbuddyApplicationTests.java
+                └── ModularityTests.java                  # Modulith verification test
+```
+
+---
+
+## 🚀 Quickstart & Local Setup
+
+### Prerequisites
+- **Java 21 LTS**
+- **Maven 3.9+**
+- **Docker & Docker Compose**
+
+### 1. Launch Supporting Infrastructure (Docker)
+From the project root:
+```bash
+docker-compose up -d
+```
+
+This starts:
+- **PostgreSQL 16**: Port `5432` (`finbuddy_crm` / `finbuddy_user` / `finbuddy_secure_pwd`)
+- **Redis 7**: Port `6379`
+- **MinIO (S3)**: Port `9000` (API) / `9001` (Web Console)
+- **Keycloak (OIDC)**: Port `8180`
+- **Finbuddy CRM Backend**: Port `8080`
+
+### 2. Run the Application Locally (Maven)
+```bash
+cd backend
+mvn clean spring-boot:run
+```
+
+### 3. Verify Modulith Boundaries
+Run the Spring Modulith test suite:
+```bash
+mvn test -Dtest=ModularityTests
+```
+This verifies module encapsulation and auto-generates PlantUML component diagrams in `target/spring-modulith-docs`.
+
+---
+
+## 📖 API Documentation & Swagger UI
+
+Once the application is running, the interactive OpenAPI 3 documentation is available at:
+- **Swagger UI**: [http://localhost:8080/api/v1/swagger-ui.html](http://localhost:8080/api/v1/swagger-ui.html)
+- **OpenAPI JSON**: [http://localhost:8080/api/v1/v3/api-docs](http://localhost:8080/api/v1/v3/api-docs)
+
+### Primary Endpoint Summary
+
+| Domain | Method | Endpoint | Description | Auth / Privilege |
+| :--- | :--- | :--- | :--- | :--- |
+| **Leads** | `POST` | `/api/v1/leads` | Create a new lead | `HAS_LEAD_WRITE` |
+| **Leads** | `GET` | `/api/v1/leads/{id}` | Get lead (PII masked by default) | `HAS_LEAD_READ` |
+| **Leads** | `GET` | `/api/v1/leads` | Paginated lead list | `HAS_LEAD_READ` |
+| **Leads** | `PATCH` | `/api/v1/leads/{id}/status`| Update origination status stage | `HAS_LEAD_WRITE` |
+| **Leads** | `DELETE`| `/api/v1/leads/{id}` | Delete lead record | `HAS_ADMIN` + `@MfaRequired` |
+| **Imports**| `POST` | `/api/v1/imports/upload` | Upload bulk CSV for async ingestion | `HAS_IMPORT_WRITE` |
+| **Imports**| `GET` | `/api/v1/imports/{id}` | Poll import job status & progress | `HAS_LEAD_READ` |
+| **Imports**| `GET` | `/api/v1/imports/{id}/errors`| Paginated row validation errors | `HAS_LEAD_READ` |
+| **Imports**| `POST` | `/api/v1/imports/{id}/resume` | Resume failed/paused import job | `HAS_IMPORT_WRITE` |
+| **Webhook**| `POST` | `/api/v1/integrations/webhooks/lenders/{code}` | Inbound NBFC loan status callback | Signed HMAC (`X-Signature`) |
+
+---
+
+## 📜 License
+Proprietary — Finbuddy CRM. All rights reserved.
