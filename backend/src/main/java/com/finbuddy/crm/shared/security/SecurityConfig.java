@@ -16,6 +16,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
@@ -98,6 +99,17 @@ public class SecurityConfig {
                 .addFilterAfter(tenantFilter, BearerTokenAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    @Bean
+    public JwtDecoder jwtDecoder(@org.springframework.beans.factory.annotation.Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri:}") String jwkSetUri) {
+        if (org.springframework.util.StringUtils.hasText(jwkSetUri) && !jwkSetUri.contains("localhost:8180")) {
+            return org.springframework.security.oauth2.jwt.NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        }
+        // Development / Offline Fallback: in-memory HMAC decoder requiring zero external OIDC server to boot
+        byte[] secretBytes = "finbuddy-standalone-development-secret-key-at-least-32-bytes!".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(secretBytes, "HmacSHA256");
+        return org.springframework.security.oauth2.jwt.NimbusJwtDecoder.withSecretKey(secretKey).build();
     }
 
     @Bean
