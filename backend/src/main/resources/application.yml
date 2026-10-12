@@ -1,0 +1,134 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api/v1
+
+spring:
+  application:
+    name: finbuddy-crm-backend
+
+  # JPA & Hibernate Configuration
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+    show-sql: false
+
+  # Primary PostgreSQL Datasource
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/finbuddy_crm}
+    username: ${SPRING_DATASOURCE_USERNAME:finbuddy_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:finbuddy_secure_pwd}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: FinbuddyHikariPool
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      connection-timeout: 20000
+
+  # Flyway Migration Configuration
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    schemas: public
+
+  # Redis Configuration
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6379}
+      password: ${SPRING_REDIS_PASSWORD:}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 2000ms
+
+  # Spring Security OAuth 2.0 Resource Server
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER_URI:http://localhost:8180/realms/finbuddy}
+          jwk-set-uri: ${OIDC_JWK_SET_URI:http://localhost:8180/realms/finbuddy/protocol/openid-connect/certs}
+
+  # File Upload limits for Bulk Imports
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 55MB
+
+# Finbuddy Custom Application Configuration
+finbuddy:
+  # Multi-Tenancy
+  multi-tenancy:
+    header-name: X-Tenant-ID
+    default-tenant: default
+    enforce-strict: true
+
+  # Audit Logging Cryptographic Security
+  audit:
+    hmac-secret: ${AUDIT_HMAC_SECRET:finbuddy-crypto-tamper-evident-chain-secret-key-2026}
+    enabled: true
+
+  # S3 Object Storage (MinIO / AWS S3)
+  storage:
+    s3:
+      endpoint: ${S3_ENDPOINT:http://localhost:9000}
+      region: ${S3_REGION:ap-south-1}
+      access-key: ${S3_ACCESS_KEY:minioadmin}
+      secret-key: ${S3_SECRET_KEY:minioadmin}
+      bucket-name: ${S3_BUCKET_NAME:finbuddy-crm-storage}
+      path-style-access-enabled: true
+
+  # Webhook Integrations Security
+  webhooks:
+    signature-tolerance-seconds: 300
+    signing-secret: ${WEBHOOK_SIGNING_SECRET:finbuddy_webhook_secret_key_prod}
+
+  # Asynchronous Bulk Import Engine
+  imports:
+    batch-size: 100
+    max-allowed-rows: 100000
+    worker-threads: 4
+
+# Actuator & Observability
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+
+# OpenAPI / Swagger Specification
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+
+# Logging Configuration
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{tenantId}] [%X{traceId}] %-5level %logger{36} - %msg%n"
+  level:
+    com.finbuddy.crm: DEBUG
+    org.springframework.security: INFO
+    org.springframework.orm.jpa: INFO
